@@ -1,4 +1,4 @@
-# CervicalCancerCaseStudy
+# Cervical Cancer Case Study
 Cancer is one of the hardest to treat ailments of humanity. According to the Canadian Cancer Society, in 2019 1.3% of 107,400 new cases of cancer in women were cases of cervical cancer. The cervix is the opening of the uterus and its health is crucial to the reproductive system’s function. The area is home to a large number of blood vessels and lymphatic channels which can increase the risk of spread. In order to construct the most effective treatment plan we must understand the contributing factors and risks (Canadian Cancer Society, n.d).
 
 
