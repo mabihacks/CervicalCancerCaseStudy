@@ -1,0 +1,695 @@
+---
+title: 'Cervical Cancer Case Study'
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+
+################## MUST manually install dependencies ##################
+
+#install.packages("caret", repos = "http://cran.r-project.org", dependencies = c("Depends", "Imports", "Suggests"))
+#install.packages('e1071', dependencies=TRUE)
+
+library(ggplot2)
+library(MASS)
+library(Amelia)
+library(tinytex)
+library(dplyr)
+library(tidyverse)
+library(aod)
+library(pROC)
+library(cowplot)
+library(broom)
+library(ROCR)
+library(caret)
+library(ggplot2)
+library(ResourceSelection)
+library(survival)
+library(ggfortify)
+library(vip)
+rm(list=ls()) # Clean the environment
+```
+
+## Retrive data
+
+```{r}
+
+# Get original data from the same folder
+cervical_cancer_data <- readxl::read_xls("cervical_cancer.xls", sheet = "Sheet1")
+
+```
+
+## Change columns names
+
+```{r}
+
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "AGE_1"] <- "AGE"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "CLS_1"] <- "CLS"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "GRAD_1"] <- "GRAD"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "CLS_1"] <- "CLS"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "HISTOLOG_1"] <- "HISTOLOG"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "MAXDEPTH_1"] <- "MAXDEPTH"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "PELLYMPH_1"] <- "PELLYMPH"
+names(cervical_cancer_data)[names(cervical_cancer_data) 
+    == "SIZE_1"] <- "SIZE"
+
+```
+
+## Permanent data cleaning
+
+```{r, results="hide"}
+### Patients without a FU_DATE are excluded 
+### Recurrence yes or no (using RECURRN1 NA or date)
+### Recode ADJ_RAD, radiation yes, no
+### Patients that died without relapse are excluded
+
+# Patients that don't have a final check up date are excluded
+cervical_cancer_data <- 
+    cervical_cancer_data[complete.cases(
+    cervical_cancer_data[,c("FU_DATE")]),]
+
+# Adds new column named "RECURRN_Y_or_N"
+# Column is initialized to 0 (Recurrence == No)
+cervical_cancer_data$RECURRN_Y_or_N <- 0
+
+# Set the values in RECURRN1 to 1 for Recurrence == Yes
+cervical_cancer_data$RECURRN_Y_or_N[!is.na(
+    cervical_cancer_data$RECURRN1)] <- 1
+
+# Reorder new column to be right after RECURRN1 
+cervical_cancer_data <- cervical_cancer_data[,c(1:12, 15, 13, 14)]
+
+# Recode ADJ_RAD to be either radiation therapy 1 - yes, 0 - no
+cervical_cancer_data$ADJ_RAD[
+    cervical_cancer_data$ADJ_RAD > 0] <- 1
+
+# Delete patients that died without relapse because they didn't have
+# the full opportunity to relapse
+cervical_cancer_data <- subset(cervical_cancer_data, !(RECURRN_Y_or_N==0 & DIS_STA > 0))
+
+cervical_cancer_data
+```
+
+## Make categorical data as factor
+
+```{r, results="hide"}
+
+cervical_cancer_data_factor <- cervical_cancer_data
+
+cervical_cancer_data_factor$ADJ_RAD <- 
+    as.factor(cervical_cancer_data_factor$ADJ_RAD)
+cervical_cancer_data_factor$CLS <- 
+    as.factor(cervical_cancer_data_factor$CLS)
+cervical_cancer_data_factor$GRAD <- 
+    as.factor(cervical_cancer_data_factor$GRAD)
+cervical_cancer_data_factor$HISTOLOG <- 
+    as.factor(cervical_cancer_data_factor$HISTOLOG)
+cervical_cancer_data_factor$MARGINS <- 
+    as.factor(cervical_cancer_data_factor$MARGINS)
+cervical_cancer_data_factor$PELLYMPH <- 
+    as.factor(cervical_cancer_data_factor$PELLYMPH)
+cervical_cancer_data_factor$DIS_STA <- 
+    as.factor(cervical_cancer_data_factor$DIS_STA)
+# cervical_cancer_data_factor$RECURRN_Y_or_N <- 
+#    as.factor(cervical_cancer_data_factor$RECURRN_Y_or_N)
+# The hoslem.test doesn't work if the response is a factor
+
+cervical_cancer_data_factor
+
+```
+
+## Observe data
+
+```{r}
+
+missmap(subset(cervical_cancer_data_factor, select = -RECURRN1), 
+    main = "Missing values vs observed")
+
+```
+
+
+## Data cleaning based on model
+
+```{r, results="hide"}
+### Omit NA rows based on selected columns
+### Start with cleaning for full model
+
+cervical_cancer_data_clean <- cervical_cancer_data_factor
+
+# Include column names to have NA rows deleted
+cervical_cancer_data_clean <- 
+    cervical_cancer_data_clean[complete.cases(
+    cervical_cancer_data_clean[,c("ADJ_RAD",	"AGE",	"CLS", 
+    "DIS_STA", "GRAD", "HISTOLOG", "MARGINS",	"MAXDEPTH",
+    "PELLYMPH", "RECURRN_Y_or_N", "SIZE")]),]
+
+# Delete GRAD missing values (Delete rows with a value of 
+# 0 – indicating a missing value.)
+cervical_cancer_data_clean <- subset(cervical_cancer_data_clean,
+    !(cervical_cancer_data_clean$GRAD==0))
+
+# Only NA's left in column "RECURRN1" as NA in this column means Recurrence == No
+
+cervical_cancer_data_clean
+
+```
+
+## Explore data
+
+```{r, include=FALSE}
+
+# Relapse rate by ADJ_RAD
+plot(prop.table(table(cervical_cancer_data_clean$ADJ_RAD, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by CLS
+plot(prop.table(table(cervical_cancer_data_clean$CLS, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by DIS_STA
+plot(prop.table(table(cervical_cancer_data_clean$DIS_STA, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by GRAD
+plot(prop.table(table(cervical_cancer_data_clean$GRAD, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by HISTOLOG
+plot(prop.table(table(cervical_cancer_data_clean$HISTOLOG, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by MARGINS
+plot(prop.table(table(cervical_cancer_data_clean$MARGINS, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by PELLYMPH
+plot(prop.table(table(cervical_cancer_data_clean$PELLYMPH, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by MAXDEPTH
+plot(prop.table(table(cervical_cancer_data_clean$MAXDEPTH,
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by SIZE
+plot(prop.table(table(cervical_cancer_data_clean$SIZE, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+# Relapse rate by AGE
+plot(prop.table(table(cervical_cancer_data_clean$AGE, 
+    cervical_cancer_data_clean$RECURRN_Y_or_N), 1)[,2])
+
+
+```
+
+
+## Multicollinearity
+
+```{r}
+#Checking if any predictor variables are correlated 
+
+# Corr size and age:
+cor(cervical_cancer_data_clean$SIZE, cervical_cancer_data_clean$AGE)
+
+# Corr depth and age:
+cor(cervical_cancer_data_clean$MAXDEPTH, cervical_cancer_data_clean$AGE)
+
+# Corr depth and size:
+cor(cervical_cancer_data_clean$MAXDEPTH, cervical_cancer_data_clean$SIZE)
+
+plot(cervical_cancer_data_clean$MAXDEPTH,
+    cervical_cancer_data_clean$SIZE, col="red")
+
+# All correlations are small, multicollinearity does not appear to be a problem.
+
+```
+
+## Models (with no interactions)
+
+```{r}
+
+# logit
+cervical_cancer.fit_all_pred_logit <-  
+    glm(RECURRN_Y_or_N ~ 
+    ADJ_RAD + AGE + CLS +
+    GRAD + HISTOLOG + MARGINS + MAXDEPTH + PELLYMPH + SIZE, 
+    data=cervical_cancer_data_clean, family=binomial(link = "logit"))
+
+cervical_cancer.fit_all_pred_logit$aic
+
+# probit
+cervical_cancer.fit_all_pred_binomial_probit <-  glm(RECURRN_Y_or_N ~ 
+    ADJ_RAD + AGE + CLS +
+    GRAD + HISTOLOG + MARGINS + MAXDEPTH + PELLYMPH + SIZE, 
+    data=cervical_cancer_data_clean, family=binomial(link="probit"))
+
+cervical_cancer.fit_all_pred_binomial_probit$aic
+
+# cloglog
+cervical_cancer.fit_all_pred_binomial_cloglog <-  glm(RECURRN_Y_or_N ~ 
+    ADJ_RAD + AGE + CLS +
+    GRAD + HISTOLOG + MARGINS + MAXDEPTH + PELLYMPH + SIZE, 
+    data=cervical_cancer_data_clean, family=binomial(link="cloglog"))
+
+cervical_cancer.fit_all_pred_binomial_cloglog$aic
+
+# Binomial with a probit link has a slightly lower AIC value
+# Binomial with a logit link is easier to interpret
+
+# Select binomial logit
+cervical_cancer.fit_all_pred <- 
+    cervical_cancer.fit_all_pred_logit
+
+summary(cervical_cancer.fit_all_pred)
+
+#Hosmer-Lemeshow test on basic model:
+hl <- hoslem.test(cervical_cancer_data_clean$RECURRN_Y_or_N, 
+    fitted(cervical_cancer.fit_all_pred))
+hl
+# Since p-value>0.05, there is no evidence of poor fit
+
+# Importance of each variable
+varImp(cervical_cancer.fit_all_pred)
+
+# Visualization of importance of each var
+cervical_cancer.fit_all_pred %>% vip()
+
+```
+
+## Confidence Intervals 
+
+```{r}
+#Confint function to obtain confidence intervals for the coefficient estimates
+confint(cervical_cancer.fit_all_pred)
+
+#Odds Ratios for Model Predictors
+exp(cbind(OR = coef(cervical_cancer.fit_all_pred), confint(cervical_cancer.fit_all_pred)))
+## THUS CLS, MAXDEPTH associated with increased odds of relapsing
+# see: https://rpubs.com/mascha/breastCancerSecond
+
+anova(cervical_cancer.fit_all_pred)
+```
+
+## Model Selection (without interactions)
+
+```{r, results="hide"}
+
+# Fit no predictors
+cervical_cancer.fit_no_pred <- glm(RECURRN_Y_or_N ~ 1, 
+  data=cervical_cancer_data_clean, family=binomial)
+
+# Step backwards through model finding the best fit
+# Starting with all predictors
+cervical_cancer.fit_no_interaction_back <- 
+    step(cervical_cancer.fit_all_pred, direction="backward", test = "Chisq")
+
+print("")
+print("Start of forward model selection")
+print("")
+
+# Step forwards through model finding the best fit
+# Starting with no predictors
+cervical_cancer.fit_no_interaction_forward <- 
+    step(cervical_cancer.fit_no_pred, scope =~ ADJ_RAD + AGE + CLS + GRAD + 
+    HISTOLOG + MARGINS + MAXDEPTH + PELLYMPH + SIZE, 
+    direction="forward", test = "Chisq")
+
+print("")
+print("Start of both directions model selection")
+print("")
+
+# Step both directions through model finding the best fit
+# Starting with all predictors
+cervical_cancer.fit_no_interaction_both = step(cervical_cancer.fit_all_pred, direction = "both", test="Chisq")
+
+
+```
+
+## Model comparison (without interactions)
+
+```{r, results="hide"}
+
+summary(cervical_cancer.fit_no_interaction_back)
+summary(cervical_cancer.fit_no_interaction_forward)
+summary(cervical_cancer.fit_no_interaction_both)
+
+# All selected models without interactions are the same
+
+```
+
+
+## Model selected (without interactions)
+
+```{r}
+
+# AIC: 267.09
+# Backward, forward and both selected model are the same
+cervical_cancer.fit_no_interaction <- cervical_cancer.fit_no_interaction_both
+
+summary(cervical_cancer.fit_no_interaction)
+
+# Pearson standard residuals
+plot(cervical_cancer.fit_no_interaction, which=1)
+
+```
+
+
+## Model selection with 2nd degree interactions
+
+```{r}
+
+# Model with 2nd degree interactions
+cervical_cancer.fit_all_interactions <- 
+    glm(RECURRN_Y_or_N ~ 
+    (ADJ_RAD + AGE + CLS +
+    GRAD + HISTOLOG + MARGINS + MAXDEPTH + PELLYMPH + SIZE)^2, 
+    data=cervical_cancer_data_clean, family=binomial(link = "logit"))
+
+summary(cervical_cancer.fit_all_interactions)
+
+# Importance of each variable
+varImp(cervical_cancer.fit_all_interactions)
+
+# Visualization of importance of each var
+cervical_cancer.fit_all_interactions %>% vip()
+
+```
+
+
+## Models with 2nd degree interactions
+
+```{r,  results="hide"}
+
+# Stepping backwards through model doesn't result in a good model and takes far 
+# too long
+
+# Step forwards through model finding the best fit
+# Starting with no predictors
+cervical_cancer.fit_all_interactions_forward <- 
+    step(cervical_cancer.fit_no_pred, scope =~ (ADJ_RAD + AGE + CLS + GRAD + 
+    MAXDEPTH + PELLYMPH + SIZE)^2, 
+    direction="forward", test = "Chisq")
+
+print("")
+print("Start of both directions model selection")
+print("")
+
+# Step both directions through model finding the best fit
+# Starting with all predictors with scope of 2nd degree interactions
+cervical_cancer.fit_all_interactions_both <- 
+    step(cervical_cancer.fit_all_pred,
+    scope =~ (ADJ_RAD + AGE + CLS + GRAD + HISTOLOG +
+    MARGINS + MAXDEPTH + PELLYMPH + SIZE)^2, direction = "both", test="Chisq")
+
+```
+
+## Model comparison (with 2nd degree interactions)
+
+```{r}
+
+summary(cervical_cancer.fit_all_interactions_forward)
+summary(cervical_cancer.fit_all_interactions_both)
+
+# Add CLS:SIZE to both to make it purely more complex
+cervical_cancer.fit_most_complex <- 
+    glm(formula = RECURRN_Y_or_N ~ AGE + CLS + MAXDEPTH + PELLYMPH + SIZE + 
+    AGE:CLS + PELLYMPH:SIZE + AGE:MAXDEPTH + CLS:SIZE, 
+    family = binomial(link = "logit"), data = cervical_cancer_data_clean)
+
+summary(cervical_cancer.fit_most_complex)
+
+anova(cervical_cancer.fit_all_interactions_forward, 
+    cervical_cancer.fit_most_complex, test="Chisq" )
+
+# Reject the null that the simpler model sufficiently fits the data as well as 
+# the more complex one"
+
+# Check if any interactions can be dropped
+drop1(cervical_cancer.fit_most_complex, test="Chisq")
+
+# Drop CLS:SIZE
+cervical_cancer.fit_most_complex <- 
+    glm(formula = RECURRN_Y_or_N ~ AGE + CLS + MAXDEPTH + PELLYMPH + SIZE + 
+    AGE:CLS + PELLYMPH:SIZE + AGE:MAXDEPTH, 
+    family = binomial(link = "logit"), data = cervical_cancer_data_clean)
+
+drop1(cervical_cancer.fit_most_complex, test="Chisq")
+
+# Drop AGE:MAXDEPTH
+cervical_cancer.fit_most_complex <- 
+    glm(formula = RECURRN_Y_or_N ~ AGE + CLS + MAXDEPTH + PELLYMPH + SIZE + 
+    AGE:CLS + PELLYMPH:SIZE, 
+    family = binomial(link = "logit"), data = cervical_cancer_data_clean)
+
+drop1(cervical_cancer.fit_most_complex, test="Chisq")
+
+# No simpler model would not be rejected for being a sufficient fit
+
+cervical_cancer.fit_selected <- cervical_cancer.fit_most_complex
+
+```
+
+
+## Add back taken out values after a model is selected
+
+```{r,  results="hide"}
+
+# Start from unclean data again
+cervical_cancer_data_clean_final <- cervical_cancer_data_factor
+
+# Only delete NA rows for the columns in the model and patients that 
+# didn't have a last follow up
+cervical_cancer_data_clean_final <- 
+    cervical_cancer_data_clean_final[complete.cases(
+    cervical_cancer_data_clean_final[,
+    c("AGE", "CLS", "MAXDEPTH", "PELLYMPH", "SIZE")]),]
+
+# More data included
+cervical_cancer_data_clean_final
+
+```
+
+# Selected model with all data that can be used
+
+```{r}
+
+cervical_cancer.fit_selected <- 
+    glm(formula = RECURRN_Y_or_N ~ AGE + CLS + MAXDEPTH + PELLYMPH + SIZE + 
+    AGE:CLS + PELLYMPH:SIZE, 
+    family = binomial(link = "logit"), data = cervical_cancer_data_clean_final)
+
+summary(cervical_cancer.fit_selected)
+
+#Hosmer-Lemeshow test on basic model:
+hl <- hoslem.test(cervical_cancer_data_clean_final$RECURRN_Y_or_N, 
+    fitted(cervical_cancer.fit_selected))
+hl
+# Since p-value>0.05, there is no evidence of poor fit. 
+# p-value is much higher than for the simple model giving more evidence that
+# this model is a better fit
+
+# Pearson standard residuals
+plot(cervical_cancer.fit_selected, which=1)
+
+```
+
+#Odds Ratios
+
+```{r}
+
+estim <- cbind(summary(cervical_cancer.fit_selected)$coef[,"Estimate"])
+
+#age cls0
+exp(estim[2])
+#age cls1
+exp(estim[2])*exp(estim[7])
+#age cls2
+exp(estim[2])*exp(estim[8])
+#MAXDEPTH
+exp(estim[5])
+# Size PELLYMPH0
+exp(estim[7])
+# Size PELLYMPH1
+exp(estim[2])*exp(estim[10])
+
+```
+
+
+# Predicting grouped risk based on odds ratios
+
+```{r}
+
+low_risk <- data.frame("AGE" = 60, "CLS" = as.factor(0), "MAXDEPTH" = 5, "SIZE" = 15, "PELLYMPH"=as.factor(1))
+
+moderate_risk <- data.frame("AGE" = 40, "CLS" = as.factor(1), "MAXDEPTH" = 20, "SIZE" = 5, "PELLYMPH"=as.factor(0))
+
+high_risk <- data.frame("AGE" = 30, "CLS" = as.factor(0), "MAXDEPTH" = 40, "SIZE" = 15, "PELLYMPH"=as.factor(0))
+
+# Low risk
+exp(predict(cervical_cancer.fit_selected, low_risk))
+
+# Moderate risk
+exp(predict(cervical_cancer.fit_selected, moderate_risk))
+
+# High risk
+exp(predict(cervical_cancer.fit_selected, high_risk))
+
+# Baseline relapse rate
+sum(cervical_cancer_data_clean_final$RECURRN_Y_or_N)/length(cervical_cancer_data_clean_final$RECURRN_Y_or_N)
+
+
+```
+
+
+# Survival analysis
+
+```{r}
+data1 <- Surv(as.numeric(cervical_cancer_data_clean$FU_DATE-cervical_cancer_data_clean$SURGDATE))
+f1 <- survfit((data1) ~1, data = cervical_cancer_data_clean)
+f1
+autoplot(f1)
+
+```
+
+
+
+
+## Machine Learning
+
+```{r}
+
+# optimize selected model by the use of repeated cross validation ‘control’ variable - “fitControl”. By that we will be able to limit model overfitting and make sure that it will then generalize well to an unseen dataset
+
+fitControl <- trainControl(method = "repeatedcv",
+                           #number of folds is 10 by default
+                           repeats = 3, 
+                           savePredictions = T)
+
+glmCancerFit <- train(as.factor(RECURRN_Y_or_N) ~ AGE + CLS + 
+    MAXDEPTH + PELLYMPH + SIZE + AGE:CLS + PELLYMPH:SIZE,
+    data=cervical_cancer_data_clean_final, method="glm", 
+    family="binomial", trControl = fitControl)
+
+glmFitAcc <- train(as.factor(RECURRN_Y_or_N) ~ AGE + CLS + 
+    MAXDEPTH + PELLYMPH + SIZE + AGE:CLS + PELLYMPH:SIZE, 
+    data=cervical_cancer_data_clean_final,
+    method="glm", metric="Accuracy", trControl = fitControl) %>% print
+### our model is 94% accurate...
+
+# Train/Set Test
+set.seed(1234)
+create_train_test <- function(data, size = 0.8, train = TRUE) {
+    n_row = nrow(data)
+    total_row = size * n_row
+    train_sample <- 1: total_row
+    if (train == TRUE) {
+        return (data[train_sample, ])
+    } else {
+        return (data[-train_sample, ])
+    }
+}
+
+# split the data between a train set and a test set
+data_train <- create_train_test(cervical_cancer_data_clean_final, 0.8, train = TRUE)
+data_test <- create_train_test(cervical_cancer_data_clean_final, 0.8, train = FALSE)
+dim(data_train)
+
+# Predicted values
+predict <- predict(cervical_cancer.fit_selected, data_test, type = 'response')
+
+# confusion matrix to count the number of times True instances are classified are False
+table_cancer <- table(data_test$RECURRN_Y_or_N, predict > 0.5)
+table_cancer
+
+# Model accuracy calculated by summing the true pos + true neg over the total obvservation
+ accuracy_Test <- sum(diag(table_cancer)) / sum(table_cancer)
+ accuracy_Test
+## 97.6% accuracy - good
+ 
+```
+
+## ROC
+
+```{r}
+
+# ROC-Receiving Operating Characteristic, measures the classifier’s performance using the proportion of positive data points correctly considered as positive (True Positive Rate or Sensitivity) and the proportion of negative data points that are mistakenly considered as positive (False Positive Rate or Fall-out)
+
+preds = predict(cervical_cancer.fit_selected,type = c("response"))
+roc1 = roc(RECURRN_Y_or_N ~ preds, data=cervical_cancer_data_clean_final)
+
+# Plot ROC
+plot(roc1)
+
+# Area under curve
+roc1$auc
+# 0.8017 - decent
+
+```
+
+# Plots/Graphs
+
+```{r}
+# Age vs Relapse
+age_vs_relapse <- 
+  cervical_cancer_data_clean_final %>%
+  count(AGE,RECURRN_Y_or_N) %>% 
+  mutate(AGE=factor(AGE)) %>% 
+  ggplot(aes(AGE,n,fill=RECURRN_Y_or_N))+
+  geom_col()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=10, size = 7))+
+  labs(subtitle = 'Distribution of Records of Relapse According to Age') +
+  geom_vline(aes(xintercept=median(as.numeric(AGE), na.rm = TRUE)), color="red", linetype="dashed", size=1) 
+  scale_x_discrete(breaks = seq(0, 100, by = 5))
+  
+cowplot::plot_grid(age_vs_relapse)
+
+# CLS vs relapse
+CLS_vs_relapse <- 
+  cervical_cancer_data_clean_final %>%
+  count(CLS,RECURRN_Y_or_N) %>% 
+  mutate(CLS=factor(CLS)) %>% 
+  ggplot(aes(CLS,n,fill=RECURRN_Y_or_N))+
+  geom_col()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=10, size = 7))+
+  labs(subtitle = 'Distribution of Records of Relapse According to CLS')
+
+  
+cowplot::plot_grid(CLS_vs_relapse)
+
+#Max depth vs relapse
+MAXDEPTH_vs_relapse <- 
+  cervical_cancer_data_clean_final %>%
+  count(MAXDEPTH,RECURRN_Y_or_N) %>% 
+  mutate(MAXDEPTH=factor(MAXDEPTH)) %>% 
+  ggplot(aes(MAXDEPTH,n,fill=RECURRN_Y_or_N))+
+  geom_col()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=10, size = 7))+
+  scale_x_discrete(breaks = seq(0, 30, by = 1))+
+  labs(subtitle = 'Distribution of Records of Relapse According to MAXDEPTH')
+
+cowplot::plot_grid(MAXDEPTH_vs_relapse)
+
+#Box plot age vs relapse
+age_relapse_box <- ggplot(cervical_cancer_data_clean_final, aes(RECURRN_Y_or_N, AGE)) + geom_boxplot(fill="skyblue") + xlab("Likelihood of Cervical Cancer") + ylab("Patient Age (years)") + geom_point(aes(fill="black"), size = 1, alpha = 0.2, position = position_jitterdodge(), show.legend = FALSE) + theme_bw()
+
+plot(age_relapse_box)
+
+#Box plot maxdepth vs relapse
+maxdepth_relapse_box <- ggplot(cervical_cancer_data_clean_final, aes(RECURRN_Y_or_N, MAXDEPTH)) + geom_boxplot(fill="skyblue") + xlab("Likelihood of Cervical Cancer") + ylab("Depth of Tumor") + geom_point(aes(fill="black"), size = 1, alpha = 0.2, position = position_jitterdodge(), show.legend = FALSE) + theme_bw()
+
+plot(maxdepth_relapse_box)
+
+```
+
+
+```
+
+
+
