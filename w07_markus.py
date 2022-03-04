@@ -57,4 +57,25 @@ def count_odds_from_file(number_file: TextIO) -> List[int]:
     [1, 0, 2]
     >>> f.close()
     """
+    countList = []
+    count = 0
+  
+  
+    for line in f:
+        line = line.rstrip()
+        if line == "START":
+            count=0
+        elif line == "END":
+            countList.append(count)
+        elif int(line)%2 == 0:
+            count+=1
+  
+    return countList
+  
+
+
+f = open("sample_numbers.txt")
+print(count_evens_from_file(f))
+f.close
+
 
