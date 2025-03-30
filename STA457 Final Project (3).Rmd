@@ -1,0 +1,90 @@
+---
+title: "STA457 Final Project"
+author: "Camilly Fuentes"
+date: '`r Sys.Date()`'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+Economic indicators that can impact price movements.
+
+-Exchange Rates (USD/GHS & EUR/USD): Cocoa is traded in USD, and fluctuations in exchange rates affect prices.
+-Inflation & Interest Rates: Higher inflation and interest rates can influence investor behavior and commodity prices.
+-Global GDP Growth: Can help capture trends in global demand.
+-Commodity Price Indices: Other agricultural commodities like coffee or sugar may have correlated movements.
+
+```{r}
+library(tidyverse)
+
+# Load the cocoa futures price dataset
+cocoa_data <- read.csv("/Users/camillyfuentes/Downloads/Daily Prices_ICCO.csv", stringsAsFactors = FALSE)
+
+# Inspect the first few rows
+head(cocoa_data)
+
+# Check structure and summary of the data
+str(cocoa_data)
+summary(cocoa_data)
+
+# Convert DATE column to Date format
+cocoa_data$Date <- as.Date(cocoa_data$Date, format="%d/%m/%Y")
+
+# Check for missing values
+colSums(is.na(cocoa_data))
+
+# Handle missing values (forward-fill missing prices if applicable)
+cocoa_data <- cocoa_data %>% fill(everything(), .direction = "down")
+
+# Remove duplicate rows
+cocoa_data <- distinct(cocoa_data)
+
+# Save cleaned cocoa price dataset
+write.csv(cocoa_data, "cleaned_Cocoa_Prices.csv", row.names = FALSE)
+
+# Print a message indicating completion
+cat("Data cleaning completed. Cleaned data saved as 'cleaned_Ghana_data.csv' and 'cleaned_Cocoa_Prices.csv'\n")
+
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+
+# Load the dataset
+ghana_data <- read.csv("/Users/camillyfuentes/Downloads/Ghana_data.csv", stringsAsFactors = FALSE)
+
+# Inspect the first few rows
+head(ghana_data)
+
+# Check structure and summary of the data
+str(ghana_data)
+summary(ghana_data)
+
+# Convert DATE column to Date format
+ghana_data$DATE <- as.Date(ghana_data$DATE, format="%Y-%m-%d")
+
+# Check for missing values
+colSums(is.na(ghana_data))
+
+# Handle missing values:
+# - If PRCP is missing, assume 0 (no precipitation)
+ghana_data$PRCP[is.na(ghana_data$PRCP)] <- 0
+
+# - If temperature values (TAVG, TMAX, TMIN) are missing, fill with column mean
+ghana_data$TAVG[is.na(ghana_data$TAVG)] <- mean(ghana_data$TAVG, na.rm = TRUE)
+ghana_data$TMAX[is.na(ghana_data$TMAX)] <- mean(ghana_data$TMAX, na.rm = TRUE)
+ghana_data$TMIN[is.na(ghana_data$TMIN)] <- mean(ghana_data$TMIN, na.rm = TRUE)
+
+# Remove duplicate rows
+ghana_data <- distinct(ghana_data)
+
+# Save cleaned dataset
+write.csv(ghana_data, "cleaned_Ghana_data.csv", row.names = FALSE)
+
+# Print a message indicating completion
+cat("Data cleaning completed. Cleaned data saved as 'cleaned_Ghana_data.csv'\n")
+
+```
+
